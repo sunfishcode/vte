@@ -1,11 +1,13 @@
 //! Parser for implementing virtual terminal emulators
 //!
 //! [`Parser`] is implemented according to [Paul Williams' ANSI parser
-//! state machine]. The state machine doesn't assign meaning to the parsed data
-//! and is thus not itself sufficient for writing a terminal emulator. Instead,
-//! it is expected that an implementation of [`Perform`] is provided which does
-//! something useful with the parsed data. The [`Parser`] handles the book
-//! keeping, and the [`Perform`] gets to simply handle actions.
+//! state machine], with minor adjustments for UTF-8 support.
+//!
+//! The state machine doesn't assign meaning to the parsed data and is thus not
+//! itself sufficient for writing a terminal emulator. Instead, it is expected that
+//! an implementation of [`Perform`] is provided which does something useful with the
+//! parsed data. The [`Parser`] handles the book keeping, and the [`Perform`] gets to
+//! simply handle actions.
 //!
 //! # Examples
 //!
@@ -348,7 +350,7 @@ pub trait Perform {
     /// Draw a character to the screen and update states.
     fn print(&mut self, _: char);
 
-    /// Execute a C0 or C1 control function.
+    /// Execute a C0 or C1 control function, or ASCII DEL (U+007F).
     fn execute(&mut self, byte: u8);
 
     /// Invoked when a final character arrives in first part of device control string.
@@ -845,6 +847,55 @@ mod tests {
 
         #[cfg(feature = "no_std")]
         assert_eq!(dispatcher.params[1].len(), MAX_OSC_RAW - dispatcher.params[0].len());
+    }
+
+    #[derive(Default)]
+    struct AsciiDispatcher {
+        num_print: u8,
+        num_control: u8,
+    }
+
+    impl Perform for AsciiDispatcher {
+        fn print(&mut self, c: char) {
+            assert!(c.is_ascii());
+            assert!(!c.is_control());
+            self.num_print += 1;
+        }
+
+        fn execute(&mut self, b: u8) {
+            assert!(b.is_ascii_control());
+            self.num_control += 1;
+        }
+
+        fn hook(&mut self, _: &[i64], _: &[u8], _: bool, _: char) {}
+
+        fn put(&mut self, _: u8) {}
+
+        fn unhook(&mut self) {}
+
+        fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
+
+        fn csi_dispatch(&mut self, _: &[i64], _: &[u8], _: bool, _: char) {}
+
+        fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {}
+    }
+
+    #[test]
+    fn parse_ascii() {
+        let mut dispatcher = AsciiDispatcher::default();
+        let mut parser = Parser::new();
+
+        for byte in 0..128 {
+            if byte != b'\x1b' {
+                parser.advance(&mut dispatcher, byte);
+            }
+        }
+
+        // All ASCII characters except C0 controls and DEL.
+        assert_eq!(dispatcher.num_print, 128 - 32 - 1);
+
+        // C0 controls (excluding ESC) and DEL.
+        assert_eq!(dispatcher.num_control, (32 - 1) + 1);
     }
 }
 
